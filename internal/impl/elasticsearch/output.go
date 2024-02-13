@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httputil"
 	"strings"
 	"time"
 
@@ -118,14 +119,15 @@ func esoConfigFromParsed(pConf *service.ParsedConfig) (conf esoConfig, err error
 		return
 	} else if tlsEnabled {
 		conf.clientOpts = append(conf.clientOpts, elastic.SetHttpClient(&http.Client{
-			Transport: &http.Transport{
+			Transport: NewDebugHTTPTransport(&http.Transport{
 				TLSClientConfig: tlsConf,
-			},
+			}),
 			Timeout: timeout,
 		}))
 	} else {
 		conf.clientOpts = append(conf.clientOpts, elastic.SetHttpClient(&http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: NewDebugHTTPTransport(http.DefaultTransport),
 		}))
 	}
 
@@ -570,5 +572,42 @@ func (e *Output) buildBulkableRequest(p *pendingBulkIndex) (elastic.BulkableRequ
 		return r, nil
 	default:
 		return nil, fmt.Errorf("elasticsearch action '%s' is not allowed", p.Action)
+	}
+}
+
+type httpTransport struct {
+	underlying http.RoundTripper
+}
+
+func (h httpTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	data, err := httputil.DumpRequest(request, true)
+	if err != nil {
+		panic(err)
+	}
+
+	//span := tracing.GetSpanFromContext(request.Context())
+	//span.LogKV("bulk-request", "request", string(data))
+	fmt.Println(string(data))
+
+	rsp, err := h.underlying.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err = httputil.DumpResponse(rsp, true)
+	if err != nil {
+		panic(err)
+	}
+	//span.LogKV("bulk-response", "response", string(data))
+	fmt.Println(string(data))
+
+	return rsp, nil
+}
+
+var _ http.RoundTripper = &httpTransport{}
+
+func NewDebugHTTPTransport(underlying http.RoundTripper) *httpTransport {
+	return &httpTransport{
+		underlying: underlying,
 	}
 }
